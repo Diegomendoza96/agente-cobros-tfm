@@ -1,0 +1,2600 @@
+{
+  "name": "WF TFM",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "# WF 01 - Outbound Daily – Preparación de casos (sin envío)\n\n### Cada día a las 8:00 (L-V) \nLa intención es tener margen de maniobra si hay algún fallo antes de que se ejecute el WF02",
+        "height": 800,
+        "width": 2052
+      },
+      "id": "42dd7b33-157c-415d-b112-1bfa33ae0e47",
+      "name": "Sticky Note - Schedule",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "###  - WF 02. 01 (contact_1)\nPrimero enviamos todos los casos que son primer contacto.\n\n### - WF 02. 02 (silencios)\nGestionamos los correos que llevan mas de 2 días sin respuesta",
+        "height": 592,
+        "width": 1764
+      },
+      "id": "d323eed2-901e-42e5-9d1b-3f530d9b32e8",
+      "name": "Sticky Note - Schedule1",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        288,
+        832
+      ]
+    },
+    {
+      "parameters": {
+        "content": "# WF02 – \n# Follow-up Scheduler\n### Cada día a las 10:00 (L-V)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+        "height": 1104,
+        "width": 272
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        0,
+        832
+      ],
+      "typeVersion": 1,
+      "id": "4fe7e728-832b-46b9-987f-dc1670043f01",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 10 * * 1-5"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        64,
+        1072
+      ],
+      "id": "371cbe02-f4f7-4d2e-bd37-2ae5ff05190b",
+      "name": "Trigger de contactos"
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_ops"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_cases"
+        },
+        "returnAll": true,
+        "where": {
+          "values": [
+            {
+              "column": "status_followup",
+              "value": "NEW"
+            },
+            {
+              "column": "followup_count",
+              "value": "0"
+            },
+            {
+              "column": "is_active",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        352,
+        1072
+      ],
+      "id": "9ecd3e40-068e-4e3e-9f18-dd1bfff87e3f",
+      "name": "get credit_cases nuevos",
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Agrupa filas de credit_cases por billing_address para enviar 1 email por payer\n// Input: items[] con campos como billing_address, payer_label, payer_email, owner_email, case_key, etc.\n// Output: 1 item por billing_address\n\nfunction safe(v) {\n  return v === undefined ? null : v;\n}\n\nconst groups = new Map();\n\nfor (const item of $input.all()) {\n  const r = item.json;\n\n  const billing = r.billing_address;\n  if (!billing) continue;\n\n  if (!groups.has(billing)) {\n    groups.set(billing, {\n      billing_address: billing,\n      payer_label: r.payer_label ?? null,\n      payer_email: r.payer_email ?? null,\n      owner_email: r.owner_email ?? null,\n      cases: [],\n      case_keys: []\n    });\n  }\n\n  const g = groups.get(billing);\n\n  // Si por alguna razón payer_label / emails vienen vacíos en alguna fila, rellena con el primero no-nulo\n  if (!g.payer_label && r.payer_label) g.payer_label = r.payer_label;\n  if (!g.payer_email && r.payer_email) g.payer_email = r.payer_email;\n  if (!g.owner_email && r.owner_email) g.owner_email = r.owner_email;\n\n  const caseObj = {\n    case_key: r.case_key,\n    document_number: r.document_number,\n    document_type: r.document_type,\n    invoice_date: safe(r.invoice_date),\n    due_date: safe(r.due_date),\n    days_past_due: safe(r.days_past_due),\n    open_amount: safe(r.open_amount),\n    aging_bucket: safe(r.aging_bucket)\n  };\n\n  g.cases.push(caseObj);\n  g.case_keys.push(r.case_key);\n}\n\n// Ordena las facturas dentro de cada payer: vencidas primero (days_past_due >= 0), luego por due_date\nfunction parseDate(d) {\n  if (!d) return null;\n  const dt = new Date(d);\n  return isNaN(dt.getTime()) ? null : dt.getTime();\n}\n\nconst out = [];\nfor (const g of groups.values()) {\n  g.cases.sort((a, b) => {\n    const aOver = (a.days_past_due ?? -999999) >= 0 ? 0 : 1; // 0 primero (vencidas)\n    const bOver = (b.days_past_due ?? -999999) >= 0 ? 0 : 1;\n    if (aOver !== bOver) return aOver - bOver;\n\n    const ad = parseDate(a.due_date) ?? 0;\n    const bd = parseDate(b.due_date) ?? 0;\n    return ad - bd;\n  });\n\n  out.push({ json: g });\n}\n\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        544,
+        1072
+      ],
+      "id": "b5141ec4-3ddc-43f6-8196-a49796eb867e",
+      "name": "Agrupar casos por cliente"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_ops"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "email_threads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "thread_id": "={{ $json.thread_id }}",
+            "billing_address": "={{ $json.billing_address }}",
+            "payer_label": "={{ $json.payer_label }}",
+            "payer_email": "={{ $json.payer_email }}",
+            "owner_email": "={{ $json.owner_email }}",
+            "status_followup": "={{ $json.status_followup }}",
+            "followup_count": "={{ $json.followup_count }}",
+            "next_followup_at": "={{ $json.next_followup_at }}",
+            "sent_message_id": "={{ $json.sent_message_id }}",
+            "sent_at": "={{ $json.sent_at }}",
+            "last_message_id": "={{ $json.last_message_id }}",
+            "last_direction": "={{ $json.last_direction }}",
+            "last_outbound_at": "={{ $json.last_outbound_at }}",
+            "last_inbound_at": "={{ $json.last_inbound_at }}",
+            "last_inbound_from": "={{ $json.last_inbound_from }}",
+            "subject_normalized": "={{ $json.subject_normalized }}",
+            "lock_until": "={{ $json.lock_until }}",
+            "error": "={{ $json.error }}",
+            "created_at": "={{ $json.created_at }}",
+            "updated_at": "={{ $json.updated_at }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "thread_id",
+              "displayName": "thread_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "billing_address",
+              "displayName": "billing_address",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "payer_label",
+              "displayName": "payer_label",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "payer_email",
+              "displayName": "payer_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "owner_email",
+              "displayName": "owner_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status_followup",
+              "displayName": "status_followup",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "followup_count",
+              "displayName": "followup_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "next_followup_at",
+              "displayName": "next_followup_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_message_id",
+              "displayName": "last_message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_direction",
+              "displayName": "last_direction",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_outbound_at",
+              "displayName": "last_outbound_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_inbound_at",
+              "displayName": "last_inbound_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_inbound_from",
+              "displayName": "last_inbound_from",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "subject_normalized",
+              "displayName": "subject_normalized",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "lock_until",
+              "displayName": "lock_until",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sent_message_id",
+              "displayName": "sent_message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sent_at",
+              "displayName": "sent_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1824,
+        880
+      ],
+      "id": "3091748d-8366-45b1-891f-e810bd0f9348",
+      "name": "Informar email_threads",
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function nextBusiness09(fromDate = new Date(), addDays = 2) {\n  const d = new Date(fromDate);\n  d.setDate(d.getDate() + addDays);\n  d.setHours(9, 0, 0, 0);\n\n  const day = d.getDay(); // 0 dom, 6 sab\n  if (day === 6) d.setDate(d.getDate() + 2);\n  if (day === 0) d.setDate(d.getDate() + 1);\n\n  // Guardamos solo fecha para que haga match con el filtro por dateOnly\n  return d.toISOString().slice(0, 10);\n}\n\nfunction normalizeSubject(s) {\n  const str = String(s ?? '');\n  return str.replace(/^(re:|fw:|fwd:)\\s*/i, '').trim();\n}\n\nconst nowIso = new Date().toISOString();\n\nreturn $input.all().map((item, index) => {\n  const r = $('plantilla mail 1').itemMatching(index).json;\n\n  // Serialización segura para Google Sheets\n  const caseKeysArr = Array.isArray(r.case_keys) ? r.case_keys : [];\n  const casesArr = Array.isArray(r.cases) ? r.cases : [];\n\n  const case_keys_csv = caseKeysArr.join(',');\n  const cases_json = JSON.stringify(casesArr);\n\n  return {\n    json: {\n      thread_id: r.thread_id,\n      billing_address: r.billing_address,\n      payer_label: r.payer_label ?? null,\n      payer_email: r.payer_email ?? null,\n      owner_email: r.owner_email ?? null,\n\n      status_followup: \"WAITING_REPLY\",\n      followup_count: 1,\n      next_followup_at: nextBusiness09(new Date(), 2),\n\n      // DRY-RUN ahora; Gmail real luego\n      sent_message_id: r.sent_message_id ?? null,\n      sent_at: r.sent_at ?? nowIso,\n\n      last_message_id: r.sent_message_id ?? null,\n      last_direction: \"OUTBOUND\",\n      last_outbound_at: r.sent_at ?? nowIso,\n\n      last_inbound_at: null,\n      last_inbound_from: null,\n\n      subject_normalized: normalizeSubject(r.subject ?? `Recordatorio | Ref: ${r.thread_id}`),\n      lock_until: null,\n\n      // Mantener \"cases\" y \"case_keys\" pero serializados:\n      case_keys: case_keys_csv,\n      cases: cases_json,\n\n      created_at: nowIso,\n      updated_at: nowIso,\n\n      error: r.error ?? null\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        880
+      ],
+      "id": "288204d5-02c0-4516-9a1a-7543271225a9",
+      "name": "Datos para email_threads"
+    },
+    {
+      "parameters": {
+        "jsCode": "const nowIso = new Date().toISOString();\nconst r = $('plantilla mail 1').item.json;\nconst caseKeys = String(r.case_keys || '').split(',').map(s => s.trim()).filter(Boolean);\n\nreturn caseKeys.map(k => ({\n  json: {\n    thread_id: r.thread_id,\n    case_key: k,\n    is_active: true,\n    created_at: nowIso,\n    updated_at: nowIso\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        1072
+      ],
+      "id": "0234a91e-139c-44c7-a83c-95c1b3a685b9",
+      "name": "Datos para thread_case_map"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_ops"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "thread_case_map"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "thread_id": "={{ $json.thread_id }}",
+            "case_key": "={{ $json.case_key }}",
+            "is_active": "={{ $json.is_active }}",
+            "created_at": "={{ $json.created_at }}",
+            "updated_at": "={{ $json.updated_at }}"
+          },
+          "matchingColumns": []
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1824,
+        1072
+      ],
+      "id": "d03939a1-1280-4a4a-a29e-21b31963a973",
+      "name": "Informar thread_case_map",
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const ts = $json.timestamp ?? $json.triggerTime ?? new Date().toISOString();\nconst d = new Date(ts);\nconst y = d.getFullYear();\nconst m = String(d.getMonth() + 1).padStart(2, '0');\nconst day = String(d.getDate()).padStart(2, '0');\nconst dateOnly = `${y}-${m}-${day}`;\n\nreturn [{ json: { ...$json, dateOnly } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        352,
+        1472
+      ],
+      "id": "aeb189b8-f813-42c1-aec5-441f175a4a1c",
+      "name": "Formato fecha",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "maxItems": 10
+      },
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        736,
+        1072
+      ],
+      "id": "563f8934-98e4-44dc-bd01-ab2d5bd4d505",
+      "name": "Control de envíos 1"
+    },
+    {
+      "parameters": {
+        "maxItems": 5
+      },
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        928,
+        1472
+      ],
+      "id": "a2b739c6-853e-49a1-b28c-cf74784f8f53",
+      "name": "Control de envíos 2"
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(s){ return String(s ?? ''); }\n\nreturn $input.all().map(item => {\n  const r = item.json;\n  const subject = `Re: Recordatorio de facturas pendientes | ${esc(r.payer_label)} | Ref: ${r.thread_id}`;\n\n  const bodyText =\n`Hola,\n\nSolo para hacer seguimiento del correo anterior.\n¿Podríais confirmarnos el estado y la fecha prevista de pago?\n\nReferencia: ${r.thread_id}\n\nGracias y un saludo,\nEuropastry`;\n\n  const bodyHtml = bodyText.replace(/\\n/g, '<br/>');\n\n  return { json: { ...r, subject, bodyText, bodyHtml } };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1152,
+        1472
+      ],
+      "id": "13b26300-36b5-490e-aea1-cbcf06f1a249",
+      "name": "plantilla mail 2"
+    },
+    {
+      "parameters": {
+        "jsCode": "function esc(s) {\n  return String(s ?? '').replace(/[&<>\"']/g, ch => ({\n    '&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'\n  }[ch]));\n}\nfunction money(v){\n  const n = Number(v);\n  return isNaN(n) ? esc(v) : n.toFixed(2);\n}\n\nreturn $input.all().map(item => {\n  const r = item.json;\n\n  // Si aún no tienes thread_id generado, crea uno aquí\n  // (Mejor hacerlo en un Code node anterior, pero esto te desbloquea)\n  const thread_id = r.thread_id ?? `REF-${r.billing_address}-${Date.now()}`;\n\n  const rowsHtml = (r.cases || []).map(c => `\n    <tr>\n      <td style=\"padding:6px 8px;border:1px solid #ddd;\">${esc(c.document_number)}</td>\n      <td style=\"padding:6px 8px;border:1px solid #ddd;\">${esc(c.due_date)}</td>\n      <td style=\"padding:6px 8px;border:1px solid #ddd;text-align:right;\">${esc(c.days_past_due)}</td>\n      <td style=\"padding:6px 8px;border:1px solid #ddd;text-align:right;\">${money(c.open_amount)}</td>\n    </tr>\n  `).join('');\n\n  const bodyHtml = `\n    <p>Hola,</p>\n\n    <p>Te escribimos desde Europastry porque hemos visto que tenemos las siguientes facturas <b>vencidas</b> y/o <b>próximas a vencer</b>:</p>\n\n    <table style=\"border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;\">\n      <thead>\n        <tr>\n          <th style=\"padding:6px 8px;border:1px solid #ddd;background:#f5f5f5;text-align:left;\">Documento</th>\n          <th style=\"padding:6px 8px;border:1px solid #ddd;background:#f5f5f5;text-align:left;\">Vencimiento</th>\n          <th style=\"padding:6px 8px;border:1px solid #ddd;background:#f5f5f5;text-align:right;\">Días</th>\n          <th style=\"padding:6px 8px;border:1px solid #ddd;background:#f5f5f5;text-align:right;\">Pendiente</th>\n        </tr>\n      </thead>\n      <tbody>\n        ${rowsHtml}\n      </tbody>\n    </table>\n\n    <p>¿Podríais confirmarnos el estado y la fecha prevista de pago?</p>\n    <p><b>Referencia:</b> ${esc(thread_id)}</p>\n    <p>Gracias y un saludo,<br/>Europastry</p>\n  `;\n\n  // Importante: devolvemos el item, no 1 solo\n  return { json: { ...r, thread_id, bodyHtml } };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        976,
+        1072
+      ],
+      "id": "bd0e1151-5698-4330-829a-f2d90783601b",
+      "name": "plantilla mail 1"
+    },
+    {
+      "parameters": {
+        "jsCode": "function nextBusinessDate(fromIso, addDays = 2) {\n  const d = new Date(fromIso);\n  d.setDate(d.getDate() + addDays);\n  const day = d.getDay(); // 0 dom, 6 sab\n  if (day === 6) d.setDate(d.getDate() + 2);\n  if (day === 0) d.setDate(d.getDate() + 1);\n  // guardamos solo YYYY-MM-DD\n  const y = d.getFullYear();\n  const m = String(d.getMonth()+1).padStart(2,'0');\n  const dd = String(d.getDate()).padStart(2,'0');\n  return `${y}-${m}-${dd}`;\n}\n\nreturn $input.all().map(item => {\n  const r = item.json;\n  const nowIso = r.sent_at ?? new Date().toISOString();\n\n  const newCount = Number(r.followup_count ?? 0) + 1;\n  const willClose = newCount >= 5;\n\n  return {\n    json: {\n      thread_id: r.thread_id,\n      followup_count: newCount,\n      status_followup: willClose ? \"CLOSED\" : \"WAITING_REPLY\",\n      last_message_id: r.sent_message_id,\n      last_direction: \"OUTBOUND\",\n      billing_address: r.billing_address,\n      payer_label: r.payer_label,\n      last_outbound_at: nowIso,\n      next_followup_at: willClose ? \"\" : nextBusinessDate(nowIso, 2),\n      updated_at: nowIso\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        1472
+      ],
+      "id": "0e1deca2-84a5-4b9e-a555-5a4ce614b389",
+      "name": "Datos para email_threads1"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_ops"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "email_threads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "thread_id": "={{ $json.thread_id }}",
+            "followup_count": "={{ $json.followup_count }}",
+            "status_followup": "={{ $json.status_followup }}",
+            "last_message_id": "={{ $json.last_message_id }}",
+            "last_direction": "={{ $json.last_direction }}",
+            "billing_address": "={{ $json.billing_address }}",
+            "payer_label": "={{ $json.payer_label }}",
+            "last_outbound_at": "={{ $json.last_outbound_at }}",
+            "next_followup_at": "={{ $json.next_followup_at === '' ? null : $json.next_followup_at }}",
+            "updated_at": "={{ $json.updated_at }}"
+          },
+          "matchingColumns": [
+            "thread_id"
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        352,
+        1760
+      ],
+      "id": "0ffcc092-2071-4e9e-8271-e6bf1871d6a8",
+      "name": "Actualizar email_threads",
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 3,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "7519abb5-d8dd-4bca-afab-ff5d69b7d935",
+              "leftValue": "={{ $('Datos para email_threads1').item.json.status_followup }}",
+              "rightValue": "CLOSED",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        528,
+        1760
+      ],
+      "id": "a8266847-743c-4a59-830f-ebc445ac5128",
+      "name": "closed_threads"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_ops"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "closed_threads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "thread_id": "={{ $json.thread_id }}",
+            "billing_address": "={{ $json.billing_address }}",
+            "payer_label": "={{ $json.payer_label }}",
+            "closed_reason": "={{ $json.closed_reason }}",
+            "closed_at": "={{ $json.closed_at }}",
+            "followup_count": "={{ $json.followup_count }}",
+            "notes": "={{ $json.notes }}",
+            "created_at": "={{ $json.created_at }}"
+          },
+          "matchingColumns": []
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        944,
+        1744
+      ],
+      "id": "e5f3eb79-a0cc-4453-adc8-b199e806220d",
+      "name": "Informar closed_threads",
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const nowIso = new Date().toISOString();\n\nreturn $input.all().flatMap((item, index) => {\n  const r = $('plantilla mail 1').itemMatching(index).json;\n\n  // Soporta case_keys como array o como CSV\n  const keys = Array.isArray(r.case_keys)\n    ? r.case_keys\n    : String(r.case_keys || '').split(',').map(s => s.trim()).filter(Boolean);\n\n  return keys.map(k => ({\n    json: {\n      case_key: k,\n      status_followup: \"WAITING_REPLY\",\n      followup_count: 1,\n      thread_id: r.thread_id,   // opcional pero recomendado\n      updated_at: nowIso\n    }\n  }));\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        1280
+      ],
+      "id": "c8b47ffb-41d0-4c4b-a143-838a9f73d7b1",
+      "name": "Datos para update credit_cases"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_ops"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_cases"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "case_key": "={{ $json.case_key }}",
+            "status_followup": "={{ $json.status_followup }}",
+            "followup_count": "={{ $json.followup_count }}",
+            "thread_id": "={{ $json.thread_id }}",
+            "updated_at": "={{ $json.updated_at }}"
+          },
+          "matchingColumns": [
+            "case_key"
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1824,
+        1280
+      ],
+      "id": "39776ba5-9901-42b6-afd6-1004bc703e8c",
+      "name": "Actualizar credit_cases",
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_ops"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "email_threads"
+        },
+        "returnAll": true,
+        "where": {
+          "values": [
+            {
+              "column": "status_followup",
+              "value": "WAITING_REPLY"
+            },
+            {
+              "column": "next_followup_at",
+              "value": "={{ $json.dateOnly }}"
+            },
+            {
+              "column": "followup_count",
+              "condition": "<",
+              "value": "5"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        544,
+        1472
+      ],
+      "id": "08215dbd-e129-4dbf-8eef-da98f5f4c60d",
+      "name": "get email_threads en silencio",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const src = $('Datos para email_threads1').item.json;\nconst nowIso = src.updated_at ?? new Date().toISOString();\n\nreturn [{\n  json: {\n    thread_id: src.thread_id,\n    billing_address: src.billing_address ?? \"\",\n    payer_label: src.payer_label ?? \"\",\n    closed_reason: \"NO_RESPONSE_5\",\n    closed_at: nowIso,\n    followup_count: src.followup_count,\n    notes: \"Cierre automático por silencio (5 intentos)\",\n    created_at: nowIso\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        1744
+      ],
+      "id": "41b6e9a6-a035-4b8c-abfb-b9e4cce80d5d",
+      "name": "Datos para closed_threads"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.payer_email }}",
+        "subject": "=Recordatorio de facturas pendientes | {{$json.payer_label}} | Ref: {{$json.thread_id}}",
+        "message": "={{ $json.bodyHtml }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1216,
+        1072
+      ],
+      "id": "105ec94f-b6cf-4600-86f3-659af2a573b1",
+      "name": "Send a message1",
+      "webhookId": "0249ac6f-3b87-4f66-976a-a454fdb8defa",
+      "retryOnFail": false,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "q5BoGHW0k5GT3I91",
+          "name": "Gmail - agentecreditos"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 496,
+        "width": 1764
+      },
+      "id": "03395765-3e19-4d7c-a948-f4ccfd417479",
+      "name": "Sticky Note - Schedule2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        288,
+        1440
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// TEST_MODE: ponlo en true para probar fuera de ventana\nconst TEST_MODE = true;\n\nfunction ymdLocal(d){\n  const y = d.getFullYear();\n  const m = String(d.getMonth()+1).padStart(2,'0');\n  const day = String(d.getDate()).padStart(2,'0');\n  return `${y}-${m}-${day}`;\n}\n\nfunction normalizeDateStr(s){\n  if (!s) return null;\n  const str = String(s).trim();\n  if (/^\\d{4}-\\d{2}-\\d{2}/.test(str)) return str.slice(0,10);\n  return null;\n}\n\nfunction isInWindow(now){\n  if (TEST_MODE) return true;\n  const dow = now.getDay(); // 0 dom, 6 sab\n  if (dow === 0 || dow === 6) return false;\n  const h = now.getHours();\n  return h >= 9 && h < 10;\n}\n\nconst now = new Date();\nconst today = ymdLocal(now);\n\nreturn $input.all().filter(item => {\n  const r = item.json;\n  if (String(r.status_followup || '') !== 'WAITING_REPLY') return false;\n\n  const fc = Number(r.followup_count ?? 0);\n  if (fc >= 5) return false;\n\n  if (!isInWindow(now)) return false;\n\n  const nf = normalizeDateStr(r.next_followup_at);\n  if (!nf) return false;\n\n  return nf <= today;\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        736,
+        1472
+      ],
+      "id": "e69a674b-18dc-4f91-b975-2f6273bda114",
+      "name": "Code in JavaScript5"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1-5"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        48,
+        224
+      ],
+      "id": "6269cd83-9829-4b2f-99d0-9bc16be0226b",
+      "name": "Trigger (08:00 L–V)"
+    },
+    {
+      "parameters": {
+        "operation": "select",
+        "schema": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_ops"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_cases"
+        },
+        "returnAll": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        224
+      ],
+      "id": "1cc1ac39-cac6-408d-8e13-eba457df7f47",
+      "name": "Leer Postgres credit_cases (existentes)",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Input: items = rows from Google Sheets credit_cases\nconst keys = {};\nfor (const it of items) {\n  const k = it.json.case_key;\n  if (k) keys[k] = true;\n}\nreturn [{ json: { existingKeys: keys } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        224
+      ],
+      "id": "7d3ca688-0af9-41d6-8cc4-23764f67cca8",
+      "name": "Indexar case_key existentes"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  punto_contacto_owner,\n  punto_contacto_owner_email,\n  punto_contacto_payer,\n  billing_address,\n  punto_de_entrega,\n  document_number,\n  document_type,\n  invoice_date,\n  due_date,\n  days_past_due_date,\n  open_amount,\n  total_amount,\n  record_type,\n  comment,\n  comment_type,\n  incidence_number,\n  NULLIF(last_incidence_management_status, 'empty') AS last_incidence_management_status,\n  date_updated,\n  CONCAT(billing_address, '|', document_number, '|', document_type) AS case_key,\n  billing_address AS payer_id,\n  punto_de_entrega AS payer_label,\n  CASE\n    WHEN days_past_due_date < 0 THEN 'Not due'\n    WHEN days_past_due_date BETWEEN 0 AND 15 THEN '0-15'\n    WHEN days_past_due_date BETWEEN 16 AND 30 THEN '16-30'\n    WHEN days_past_due_date BETWEEN 31 AND 60 THEN '31-60'\n    ELSE '60+'\n  END AS aging_bucket\nFROM warehouse.customer_ledger_view\nWHERE\n  (days_past_due_date >= 0 OR days_past_due_date BETWEEN -5 AND -1)\n  AND document_type NOT IN ('R1-A/R Drafts')\n  AND open_amount > 0\n  AND customer_group = 'SIN';",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        592,
+        224
+      ],
+      "id": "f454e095-47ea-46c9-ba99-435e75179214",
+      "name": "Leer Postgres (Customer_ledger_view)",
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "function toISODate(v) {\n  if (!v) return null;\n  if (typeof v === 'string' && /^\\d{4}-\\d{2}-\\d{2}/.test(v)) return v.slice(0, 10);\n  const d = new Date(v);\n  if (isNaN(d.getTime())) return null;\n  return d.toISOString().slice(0, 10);\n}\n\nconst nowIso = new Date().toISOString();\n\nreturn items.map((item) => {\n  const r = item.json;\n\n  const caseKey =\n    r.case_key ??\n    `${r.billing_address}|${r.document_number}|${r.document_type}`;\n\n  const payerLabel = r.payer_label ?? r.punto_de_entrega ?? r.punto_contacto_payer ?? null;\n\n  // Normaliza \"empty\" -> null\n  const rawLastStatus = r.last_incidence_management_status ?? null;\n  const lastStatus = (rawLastStatus === 'empty' || rawLastStatus === '') ? null : rawLastStatus;\n\n  return {\n    json: {\n      case_key: caseKey,\n      billing_address: r.billing_address ?? null,\n      payer_label: payerLabel,\n\n      payer_email: r.payer_email ?? \"diegomendzdln@gmail.com\",\n\n      owner_name: r.punto_contacto_owner ?? null,\n      owner_email: r.punto_contacto_owner_email ?? null,\n\n      document_number: r.document_number ?? null,\n      document_type: r.document_type ?? null,\n      invoice_date: toISODate(r.invoice_date),\n      due_date: toISODate(r.due_date),\n      days_past_due: r.days_past_due_date ?? null,\n      aging_bucket: r.aging_bucket ?? null,\n      open_amount: r.open_amount ?? null,\n      total_amount: r.total_amount ?? null,\n      record_type: r.record_type ?? null,\n\n      // Defaults for NEW rows (solo deben aplicarse en APPEND, no en UPDATE)\n      status_followup: \"NEW\",\n      thread_id: null,\n      followup_count: 0,\n\n      last_classification: null,\n      last_confidence: null,\n      routing_team: null,\n      next_action: null,\n      last_comment: null,\n      last_status_code: lastStatus,\n\n      created_at: nowIso,\n      updated_at: nowIso,\n      is_active: true\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        224
+      ],
+      "id": "a4fbe579-658f-467e-a7bd-afe07fdebea3",
+      "name": "Transform Snowflake"
+    },
+    {
+      "parameters": {
+        "jsCode": "const nowIso = new Date().toISOString();\n\n// Lee existingKeys desde el nodo que lo construye (ajusta el nombre del nodo si es distinto)\nconst existingKeys =\n  ($items(\"Indexar case_key existentes\")[0]?.json?.existingKeys) || {};\n\nreturn $input.all().map(item => {\n  const r = item.json;\n  const exists = !!existingKeys[r.case_key];\n\n  const updateRow = {\n    case_key: r.case_key,\n    billing_address: r.billing_address,\n    payer_label: r.payer_label,\n    payer_email: r.payer_email,\n    owner_name: r.owner_name,\n    owner_email: r.owner_email,\n    document_number: r.document_number,\n    document_type: r.document_type,\n    invoice_date: r.invoice_date,\n    due_date: r.due_date,\n    days_past_due: r.days_past_due,\n    aging_bucket: r.aging_bucket,\n    open_amount: r.open_amount,\n    total_amount: r.total_amount,\n    record_type: r.record_type,\n    last_status_code: r.last_status_code,\n    updated_at: nowIso,\n    is_active: true\n  };\n\n  return {\n    json: {\n      exists,\n      case_key: r.case_key,\n      updateRow,\n      insertRow: r\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        944,
+        224
+      ],
+      "id": "0cbd8d21-3d93-4bad-bddc-13372fb7d6b9",
+      "name": "Preparar Upsert"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d2615a8c-b558-4060-8f47-f467acd364c2",
+              "leftValue": "={{$json.exists}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        208,
+        544
+      ],
+      "id": "e28a5ed6-edcd-47eb-add8-42860d382b6c",
+      "name": "IF existe case_key"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flatten for UPDATE: replace current json with updateRow\nreturn $input.all().map(item => ({ json: item.json.updateRow }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        432
+      ],
+      "id": "a47e044d-54d1-47d6-98d1-4c220873acd7",
+      "name": "Flatten UPDATE payload"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_ops"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_cases"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "case_key"
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        672,
+        432
+      ],
+      "id": "d8ea98e4-529c-443c-8691-f0ea5cb4a35c",
+      "name": "UPDATE Postgres credit_cases (by case_key)",
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flatten for APPEND: replace current json with insertRow\nreturn $input.all().map(item => ({ json: item.json.insertRow }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        640
+      ],
+      "id": "79c1883f-9142-44c6-82c0-c53995fa56b0",
+      "name": "UPDATE credit_cases (by case_key)"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_ops"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_cases"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {
+            "is_active": false
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "case_key",
+              "displayName": "case_key",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "billing_address",
+              "displayName": "billing_address",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "payer_label",
+              "displayName": "payer_label",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "payer_email",
+              "displayName": "payer_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "owner_name",
+              "displayName": "owner_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "owner_email",
+              "displayName": "owner_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "document_number",
+              "displayName": "document_number",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "document_type",
+              "displayName": "document_type",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "invoice_date",
+              "displayName": "invoice_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "due_date",
+              "displayName": "due_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "days_past_due",
+              "displayName": "days_past_due",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "aging_bucket",
+              "displayName": "aging_bucket",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "open_amount",
+              "displayName": "open_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "total_amount",
+              "displayName": "total_amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "record_type",
+              "displayName": "record_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "status_followup",
+              "displayName": "status_followup",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "thread_id",
+              "displayName": "thread_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "last_classification",
+              "displayName": "last_classification",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "last_confidence",
+              "displayName": "last_confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "routing_team",
+              "displayName": "routing_team",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "next_action",
+              "displayName": "next_action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "last_comment",
+              "displayName": "last_comment",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "last_status_code",
+              "displayName": "last_status_code",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "is_active",
+              "displayName": "is_active",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "boolean",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "followup_count",
+              "displayName": "followup_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        672,
+        640
+      ],
+      "id": "a5608098-a3ef-4bf7-81d2-55e1174fe0c5",
+      "name": "INSERT Postgres credit_cases (nuevo caso)",
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        912,
+        528
+      ],
+      "id": "c6af32f9-7ddd-4bf4-98ad-7f0cc89a9707",
+      "name": "Merge resultados"
+    },
+    {
+      "parameters": {
+        "sendTo": "diegomendzdln@gmail.com",
+        "subject": "={{ $('Code in JavaScript').item.json.email_subject }}",
+        "message": "={{ $('Code in JavaScript').item.json.email_body }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1744,
+        528
+      ],
+      "id": "da3af142-3e8e-4ce8-8713-1938c89654d0",
+      "name": "Merge resultados (update+append)",
+      "webhookId": "d92cf910-c9f0-43a3-a415-3467204a4f90",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "q5BoGHW0k5GT3I91",
+          "name": "Gmail - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// WF01 - construir resumen tras merge (updates + appends)\n// Output: 1 item con payload para agent_action_log + email\n\nconst nowIso = new Date().toISOString();\nconst run_id = $execution.id ?? \"\";  // si tu versión lo soporta\n\nconst items = $input.all();\n\n// Intenta contar \"updates\" y \"appends\" según de qué rama venga.\n// Si tienes nodos separados, lo ideal es marcar action en cada rama antes del merge.\n// Como fallback, contamos total.\nlet updated = 0;\nlet appended = 0;\nlet total = items.length;\n\n// Si antes del merge marcaste item.json._op = \"UPDATE\" / \"APPEND\", esto funcionará:\nfor (const it of items) {\n  const op = it.json._op;\n  if (op === \"UPDATE\") updated++;\n  if (op === \"APPEND\") appended++;\n}\n\n// Si no tienes _op, deja todo como total y 0/0.\nconst summaryLines = [\n  `WF01 (Preparación de casos) completado.`,\n  `Timestamp: ${nowIso}`,\n  `Total filas procesadas: ${total}`,\n  `Actualizadas: ${updated}`,\n  `Insertadas: ${appended}`,\n];\n\nconst emailSubject = `WF01 OK | Preparación de casos | ${nowIso.slice(0,10)}`;\nconst emailBody =\n  summaryLines.join('\\n') +\n  `\\n\\n(Entorno PoC - Google Sheets)\\n`;\n\nreturn [{\n  json: {\n    // agent_action_log payload\n    event_id: `WF01-${Date.now()}`,\n    timestamp: nowIso,\n    run_id,\n    action_type: \"prepare_cases\",\n    result: \"OK\",\n    rows_total: total,\n    rows_updated: updated,\n    rows_inserted: appended,\n    error_detail: \"\",\n\n    // email payload\n    notify_to: \"diegomendzdln@gmail.com\",\n    email_subject: emailSubject,\n    email_body: emailBody,\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1136,
+        528
+      ],
+      "id": "b62485cc-79d0-4480-b00c-599727198b89",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        1552,
+        528
+      ],
+      "id": "301b9a3b-8fa9-41bb-9a75-20bd06051904",
+      "name": "Limit"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.payer_email }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.bodyHtml }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1360,
+        1472
+      ],
+      "id": "6f60c943-bbb0-4c7d-86df-2e8d8befa4aa",
+      "name": "Send a message",
+      "webhookId": "cd7e2972-a1be-48b1-9c22-5081ef973c35",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "q5BoGHW0k5GT3I91",
+          "name": "Gmail - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyHour"
+            }
+          ]
+        },
+        "filters": {
+          "labelIds": [
+            "Label_3146516315499575359"
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        32,
+        2192
+      ],
+      "id": "120ac094-f396-43e4-a75e-05987550394b",
+      "name": "Gmail Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "q5BoGHW0k5GT3I91",
+          "name": "Gmail - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "80079bfc-8bd5-43f2-91e0-8de83110929b",
+              "leftValue": "={{ $json.thread_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        416,
+        2192
+      ],
+      "id": "40746501-f6a1-4a0b-bf47-f4a8c5b63902",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "sendTo": "diegomendzdln@gmail.com",
+        "subject": "Email erroneo",
+        "message": "Ha llegado un correo mal informado",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        624,
+        2288
+      ],
+      "id": "abd71257-949d-4e66-8def-74d205f0c19a",
+      "name": "Escalar a responsable",
+      "webhookId": "9896de54-11f1-477d-8fde-214bbb22df3c",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "q5BoGHW0k5GT3I91",
+          "name": "Gmail - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT et.*,\n  (SELECT string_agg(tcm.case_key, ',')\n   FROM credit_ops.thread_case_map tcm\n   WHERE tcm.thread_id = et.thread_id AND tcm.is_active) AS case_keys\nFROM credit_ops.email_threads et\nWHERE et.thread_id = $1;",
+        "options": {
+          "queryReplacement": "={{ $json.thread_id }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        624,
+        2096
+      ],
+      "id": "22abc6ca-5d1e-4a0e-8f99-5c6c4d934285",
+      "name": "Get row(s) in sheet",
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "33967c8f-1966-4a8f-9245-042c74bcb475",
+              "leftValue": "={{$json.case_keys}}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        784,
+        2096
+      ],
+      "id": "b749fe38-8f14-4af0-a938-e18e8cb42e78",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $json;\n\n// case_keys llega como CSV desde email_threads\nconst case_keys = String(r.case_keys || '')\n  .split(',')\n  .map(s => s.trim())\n  .filter(Boolean);\n\nreturn [{ json: { ...r, case_keys } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        992,
+        2000
+      ],
+      "id": "e4aaa64b-5733-41a6-8c49-eda07f19358c",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=THREAD_ID: {{ $json.thread_id }}\nSUBJECT: {{ $('Code in JavaScript4').item.json.subject }}\n\nEMAIL_BODY:\n{{ $('Code in JavaScript4').item.json.body_text }}\n\n(OPCIONAL) CONTEXTO DE FACTURAS (si existe):\n{{$json.cases}}\n\nDevuelve SOLO el JSON final.",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "Eres un asistente de clasificación para un workflow de cobros (Accounts Receivable) en una empresa B2B.\n\nTu tarea: leer el email de respuesta del cliente (texto libre) y devolver SOLO un JSON VÁLIDO (sin markdown, sin explicaciones, sin texto fuera del JSON).\n\nReglas:\n- Devuelve siempre los mismos campos definidos abajo.\n- Usa exclusivamente las etiquetas permitidas.\n- Si hay ambigüedad, elige la opción más conservadora y baja la confidence.\n- Nunca inventes datos (fechas, importes, números de factura) si no aparecen en el texto.\n\nEtiquetas permitidas:\n\nclassification (elige 1):\n- PAID_CONFIRMED (cliente confirma que ya pagó)\n- PROMISE_TO_PAY (cliente promete pagar en una fecha futura)\n- DISPUTE (cliente indica incidencia/disputa: factura incorrecta, no recibida, etc.)\n- NEED_COPY (cliente pide copia/duplicado o documentación)\n- ASK_INFO (cliente hace pregunta o pide aclaración sin disputarlo claramente)\n- OTHER (cualquier otro caso)\n\nnext_action (elige 1):\n- CLOSE (cerrar caso/hilo)\n- WAIT (esperar, no enviar follow-up por ahora)\n- FOLLOWUP (seguir insistiendo según cadencia)\n- REQUEST_INFO (pedir información concreta)\n- ESCALATE (escalar internamente)\n\nrouting_team (elige 1):\n- AR_CREDITS\n- SALES_OWNER\n- BACKOFFICE\n- UNKNOWN\n\nCampos a devolver (siempre):\n{\n  \"classification\": \"...\",\n  \"next_action\": \"...\",\n  \"routing_team\": \"...\",\n  \"comment\": \"...\",\n  \"confidence\": 0.0,\n  \"payment_date\": \"YYYY-MM-DD\" o null,\n  \"needs_human\": true/false\n}\n\nGuías:\n- Si el cliente dice “pagaremos la semana que viene” => PROMISE_TO_PAY, payment_date=null, next_action=WAIT.\n- Si da una fecha concreta (“el 25/03”) => PROMISE_TO_PAY y normaliza a YYYY-MM-DD (si puedes inferir el año por contexto; si no, null).\n- Si dice “ya está pagado” => PAID_CONFIRMED, next_action=CLOSE.\n- Si menciona “no recibida”, “incorrecta”, “abono”, “discrepancia”, “EDI”, “albarán” => DISPUTE, routing_team=BACKOFFICE o AR_CREDITS según el caso.\n- Si pide “reenviar factura/copia” => NEED_COPY, routing_team=BACKOFFICE, next_action=REQUEST_INFO o WAIT.\n- needs_human=true cuando:\n  - no está claro el estado\n  - hay disputa/tono agresivo\n  - pide cambios que no puedes resolver automáticamente\n  - confidence < 0.6"
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        1168,
+        2000
+      ],
+      "id": "eafa944c-f218-452c-99b5-14bf988eb91e",
+      "name": "Clasificar respuesta (Anthropic)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// WF03 - Normaliza salida del LLM (robusto)\n// Intenta leer JSON desde varias rutas habituales de n8n OpenAI node\n\nconst nowIso = new Date().toISOString();\n\nfunction tryParseJson(s) {\n  if (!s) return null;\n  try { return JSON.parse(s); } catch { return null; }\n}\n\nconst r = $json;\n\n// posibles ubicaciones del texto devuelto por el modelo\nconst candidate =\n  r.output ??\n  r.content ??\n  r.text ??\n  r.message?.content ??\n  r.output_text ??\n  r.data?.content ??\n  null;\n\n// si ya viene como objeto, úsalo\nlet out = (typeof candidate === \"object\" && candidate) ? candidate : tryParseJson(candidate);\n\n// fallback: si el nodo ya dejó los campos en raíz\nif (!out) out = {\n  classification: r.classification,\n  next_action: r.next_action,\n  routing_team: r.routing_team,\n  comment: r.comment,\n  confidence: r.confidence,\n  payment_date: r.payment_date,\n  needs_human: r.needs_human\n};\n\nconst classification = out.classification ?? \"OTHER\";\nconst next_action = out.next_action ?? \"FOLLOWUP\";\nconst routing_team = out.routing_team ?? \"UNKNOWN\";\nconst comment = out.comment ?? \"\";\nconst confidence = (typeof out.confidence === \"number\") ? out.confidence : 0.5;\nconst payment_date = out.payment_date ?? null;\nconst needs_human = (typeof out.needs_human === \"boolean\") ? out.needs_human : (confidence < 0.6);\n\nreturn [{\n  json: {\n    ...r,\n    classification,\n    next_action,\n    routing_team,\n    comment,\n    confidence,\n    payment_date,\n    needs_human,\n    processed_at: nowIso\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1472,
+        2000
+      ],
+      "id": "4d1b2d49-ae7d-4406-be40-873f86dfe332",
+      "name": "Code in JavaScript3"
+    },
+    {
+      "parameters": {
+        "jsCode": "const nowIso = $json.processed_at ?? new Date().toISOString();\nconst isPaid = $json.classification === \"PAID_CONFIRMED\";\n\nreturn [{\n  json: {\n    thread_id: $json.thread_id,\n    status_followup: isPaid ? \"CLOSED\" : \"REPLIED\",\n    next_followup_at: \"\",                // importante: pausa silencios\n    last_direction: \"INBOUND\",\n    last_inbound_at: nowIso,\n    last_inbound_from: $json.from_email ?? \"\",\n    updated_at: nowIso,\n    error: \"\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1472,
+        2240
+      ],
+      "id": "bf0792aa-7e33-4fcf-917b-4e11ac023d65",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "jsCode": "function replyText(cls, payment_date) {\n  if (cls === \"PAID_CONFIRMED\") {\n    return \"Gracias por la confirmación. Quedamos a la espera de validación en sistema. Un saludo.\";\n  }\n  if (cls === \"PROMISE_TO_PAY\") {\n    return payment_date\n      ? `Gracias. Tomamos nota del pago previsto para ${payment_date}. Un saludo.`\n      : \"Gracias. Tomamos nota del pago previsto para los próximos días. Un saludo.\";\n  }\n  if (cls === \"DISPUTE\") return \"Gracias. Revisamos la incidencia indicada y te confirmamos en cuanto tengamos respuesta. Un saludo.\";\n  if (cls === \"NEED_COPY\") return \"Gracias. Te reenviamos la documentación solicitada en cuanto esté disponible. Un saludo.\";\n  return \"Gracias por tu mensaje. Lo revisamos y te confirmamos a la mayor brevedad. Un saludo.\";\n}\n\n// en reply_simulated\nconst nowIso = $json.processed_at ?? new Date().toISOString();\n\nreturn [{\n  json: {\n    ...$json,  // ✅ mantiene thread_id, case_keys, classification, etc.\n    to_email: $json.from_email ?? \"\",\n    subject: `Re: ${$json.subject ?? \"\"} | Ref: ${$json.thread_id}`,\n    body_text: \"Gracias por tu mensaje. Lo revisamos y te confirmamos a la mayor brevedad. Un saludo.\",\n    created_at: nowIso,\n    type: \"reply_simulated\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1712,
+        2000
+      ],
+      "id": "c7ba9d25-ecd9-4aa7-9b99-554e5d326a1a",
+      "name": "reply simultated"
+    },
+    {
+      "parameters": {
+        "jsCode": "function pickFirst(...vals) {\n  for (const v of vals) {\n    if (v !== undefined && v !== null && String(v).trim() !== '') return v;\n  }\n  return '';\n}\n\nfunction extractRef(text) {\n  if (!text) return null;\n  const s = String(text);\n\n  // Captura \"Ref: REF-....\" o \"Referencia: REF-....\"\n  const m = s.match(/(?:\\bref(?:erencia)?\\b\\s*:\\s*)(REF-[A-Za-z0-9_-]+)/i);\n  return m ? m[1] : null;\n}\n\nfunction extractBilling(ref) {\n  if (!ref) return null;\n  const m = String(ref).match(/REF-(\\d+)-/i); // sin ^ para permitir texto alrededor\n  return m ? m[1] : null;\n}\n\nreturn $input.all().map(item => {\n  const r = item.json;\n\n  // Intenta varios caminos típicos del Gmail trigger\n  const subject = pickFirst(\n    r.subject,\n    r.Subject,\n    r.payload?.headers?.Subject,\n    r.payload?.headers?.subject\n  );\n\n  const body = pickFirst(\n    r.textPlain,\n    r.text,\n    r.body,\n    r.snippet,\n    r.payload?.body?.data\n  );\n\n  const thread_id = extractRef(subject) || extractRef(body);\n\n  // Fallback: a veces el Ref está en el subject sin \"Ref:\" (por ejemplo al reenviar)\n  // intenta encontrar REF-xxxx directamente\n  const directRef = thread_id || (String(subject).match(/\\bREF-\\d+-\\d+\\b/i)?.[0]) || null;\n\n  const billing_address = extractBilling(directRef);\n\n  return {\n    json: {\n      ...r,\n      subject,\n      body_text: body,\n      thread_id: directRef,\n      billing_address\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        2192
+      ],
+      "id": "9d5c0498-c1cd-49aa-8c14-212cd092cd54",
+      "name": "Code in JavaScript4"
+    },
+    {
+      "parameters": {
+        "sendTo": "diegomendzdln@gmail.com",
+        "subject": "Necesita revisión",
+        "message": "No se encuentra el thread id",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        992,
+        2224
+      ],
+      "id": "194dadf0-9706-4f48-b931-d2e753363844",
+      "name": "Send a message2",
+      "webhookId": "bc74c70c-8fd6-43e7-8138-5accbe38717b",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "q5BoGHW0k5GT3I91",
+          "name": "Gmail - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Get row(s) in sheet').item.json.payer_email }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.body_text }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1472,
+        2416
+      ],
+      "id": "403d54b7-e36d-4028-bbea-d59346dbed4c",
+      "name": "Send a message3",
+      "webhookId": "6bdc1b65-3eb2-41e4-a2b1-d3fe6a1d99a7",
+      "alwaysOutputData": true,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "q5BoGHW0k5GT3I91",
+          "name": "Gmail - agentecreditos"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "schema": {
+          "__rl": true,
+          "mode": "name",
+          "value": "credit_ops"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "name",
+          "value": "email_threads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "thread_id": "={{ $json.thread_id }}",
+            "status_followup": "={{ $json.status_followup }}",
+            "next_followup_at": "={{ $json.next_followup_at === '' ? null : $json.next_followup_at }}",
+            "last_direction": "={{ $json.last_direction }}",
+            "last_inbound_at": "={{ $json.last_inbound_at }}",
+            "last_inbound_from": "={{ $json.last_inbound_from }}",
+            "updated_at": "={{ $json.updated_at }}",
+            "error": "={{ $json.error }}"
+          },
+          "matchingColumns": [
+            "thread_id"
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1696,
+        2240
+      ],
+      "id": "f2f19139-3409-4ec9-a355-ee4fc8499ff6",
+      "name": "Append or update row in sheet1",
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "# WF 03 - Inbound listener \n# Recibir respuesta, entenderla y contestar",
+        "height": 656,
+        "width": 2048
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        0,
+        1952
+      ],
+      "typeVersion": 1,
+      "id": "00fa5d15-0dfc-4a7c-b1da-e0fb6d5ecbc9",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "value": "credit_ops",
+          "mode": "name"
+        },
+        "table": {
+          "__rl": true,
+          "value": "agent_action_log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "rows_total": "={{ $json.rows_total }}",
+            "rows_updated": "={{ $json.rows_updated }}",
+            "rows_inserted": "={{ $json.rows_inserted }}",
+            "event_timestamp": "={{ $json.timestamp }}",
+            "run_id": "={{ $json.run_id }}",
+            "action_type": "={{ $json.action_type }}",
+            "result": "={{ $json.result }}",
+            "error_detail": "={{ $json.error_detail }}",
+            "idempotency_key": "=",
+            "event_id": "={{ $json.event_id }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "event_id",
+              "displayName": "event_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "event_timestamp",
+              "displayName": "event_timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "run_id",
+              "displayName": "run_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "scope",
+              "displayName": "scope",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "thread_id",
+              "displayName": "thread_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "case_key",
+              "displayName": "case_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "action_type",
+              "displayName": "action_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "status_before",
+              "displayName": "status_before",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "status_after",
+              "displayName": "status_after",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "result",
+              "displayName": "result",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "idempotency_key",
+              "displayName": "idempotency_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "error_detail",
+              "displayName": "error_detail",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "payload_ref",
+              "displayName": "payload_ref",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "rows_total",
+              "displayName": "rows_total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "rows_updated",
+              "displayName": "rows_updated",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "rows_inserted",
+              "displayName": "rows_inserted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1344,
+        528
+      ],
+      "id": "a881e942-3ae3-43bc-b6c3-2292b9d181ff",
+      "name": "Insert rows in a table",
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-4-5-20250929"
+        },
+        "options": {}
+      },
+      "id": "3fac482f-d52f-4c21-8645-1b118e542528",
+      "name": "Anthropic Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        1168,
+        2128
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "hw28h9ZSZQeNPgSk",
+          "name": "Anthropic - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"classification\": { \"type\": \"string\", \"enum\": [\"PAID_CONFIRMED\", \"PROMISE_TO_PAY\", \"DISPUTE\", \"NEED_COPY\", \"ASK_INFO\", \"OTHER\"] },\n    \"next_action\": { \"type\": \"string\", \"enum\": [\"CLOSE\", \"WAIT\", \"FOLLOWUP\", \"REQUEST_INFO\", \"ESCALATE\"] },\n    \"routing_team\": { \"type\": \"string\", \"enum\": [\"AR_CREDITS\", \"SALES_OWNER\", \"BACKOFFICE\", \"UNKNOWN\"] },\n    \"comment\": { \"type\": \"string\" },\n    \"confidence\": { \"type\": \"number\", \"minimum\": 0, \"maximum\": 1 },\n    \"payment_date\": { \"type\": [\"string\", \"null\"] },\n    \"needs_human\": { \"type\": \"boolean\" }\n  },\n  \"required\": [\"classification\", \"next_action\", \"routing_team\", \"comment\", \"confidence\", \"payment_date\", \"needs_human\"]\n}",
+        "autoFix": true
+      },
+      "id": "ce0f3e8f-2dde-4dc3-8dc9-95435f8722d6",
+      "name": "Structured Output Parser",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1136,
+        2336
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "claude-sonnet-4-5-20250929"
+        },
+        "options": {}
+      },
+      "id": "f6dc8085-fe2e-4e4e-bd83-3dc0a4003ac8",
+      "name": "Anthropic Chat Model (Fixer)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.3,
+      "position": [
+        1136,
+        2464
+      ],
+      "credentials": {
+        "anthropicApi": {
+          "id": "hw28h9ZSZQeNPgSk",
+          "name": "Anthropic - agentecreditos"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Trigger de contactos": {
+      "main": [
+        [
+          {
+            "node": "get credit_cases nuevos",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Formato fecha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get credit_cases nuevos": {
+      "main": [
+        [
+          {
+            "node": "Agrupar casos por cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agrupar casos por cliente": {
+      "main": [
+        [
+          {
+            "node": "Control de envíos 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Datos para email_threads": {
+      "main": [
+        [
+          {
+            "node": "Informar email_threads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Datos para thread_case_map": {
+      "main": [
+        [
+          {
+            "node": "Informar thread_case_map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formato fecha": {
+      "main": [
+        [
+          {
+            "node": "get email_threads en silencio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Control de envíos 1": {
+      "main": [
+        [
+          {
+            "node": "plantilla mail 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Control de envíos 2": {
+      "main": [
+        [
+          {
+            "node": "plantilla mail 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "plantilla mail 2": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "plantilla mail 1": {
+      "main": [
+        [
+          {
+            "node": "Send a message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Datos para email_threads1": {
+      "main": [
+        [
+          {
+            "node": "Actualizar email_threads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Actualizar email_threads": {
+      "main": [
+        [
+          {
+            "node": "closed_threads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "closed_threads": {
+      "main": [
+        [
+          {
+            "node": "Datos para closed_threads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Datos para update credit_cases": {
+      "main": [
+        [
+          {
+            "node": "Actualizar credit_cases",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get email_threads en silencio": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Datos para closed_threads": {
+      "main": [
+        [
+          {
+            "node": "Informar closed_threads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript5": {
+      "main": [
+        [
+          {
+            "node": "Control de envíos 2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message1": {
+      "main": [
+        [
+          {
+            "node": "Datos para email_threads",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Datos para thread_case_map",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Datos para update credit_cases",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger (08:00 L–V)": {
+      "main": [
+        [
+          {
+            "node": "Leer Postgres credit_cases (existentes)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer Postgres credit_cases (existentes)": {
+      "main": [
+        [
+          {
+            "node": "Indexar case_key existentes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Indexar case_key existentes": {
+      "main": [
+        [
+          {
+            "node": "Leer Postgres (Customer_ledger_view)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer Postgres (Customer_ledger_view)": {
+      "main": [
+        [
+          {
+            "node": "Transform Snowflake",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transform Snowflake": {
+      "main": [
+        [
+          {
+            "node": "Preparar Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar Upsert": {
+      "main": [
+        [
+          {
+            "node": "IF existe case_key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF existe case_key": {
+      "main": [
+        [
+          {
+            "node": "Flatten UPDATE payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "UPDATE credit_cases (by case_key)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Flatten UPDATE payload": {
+      "main": [
+        [
+          {
+            "node": "UPDATE Postgres credit_cases (by case_key)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "UPDATE Postgres credit_cases (by case_key)": {
+      "main": [
+        [
+          {
+            "node": "Merge resultados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "UPDATE credit_cases (by case_key)": {
+      "main": [
+        [
+          {
+            "node": "INSERT Postgres credit_cases (nuevo caso)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "INSERT Postgres credit_cases (nuevo caso)": {
+      "main": [
+        [
+          {
+            "node": "Merge resultados",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge resultados": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Insert rows in a table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limit": {
+      "main": [
+        [
+          {
+            "node": "Merge resultados (update+append)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        [
+          {
+            "node": "Datos para email_threads1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Get row(s) in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Escalar a responsable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s) in sheet": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send a message2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Clasificar respuesta (Anthropic)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clasificar respuesta (Anthropic)": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        [
+          {
+            "node": "reply simultated",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "reply simultated": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send a message3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript4": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert rows in a table": {
+      "main": [
+        [
+          {
+            "node": "Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Clasificar respuesta (Anthropic)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Clasificar respuesta (Anthropic)",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anthropic Chat Model (Fixer)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Structured Output Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "386041cf-7113-4efa-8605-21ab431fd146",
+  "meta": {
+    "instanceId": "b95fa65f8226b9dff22d4917d19c79b6b68a68a00b113077d6753d32a72d7644"
+  },
+  "id": "SG4r4xAmkEq1aYfG",
+  "tags": []
+}
