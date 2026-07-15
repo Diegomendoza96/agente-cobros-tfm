@@ -380,7 +380,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const nowIso = new Date().toISOString();\nconst r = $('plantilla mail 1').item.json;\nconst caseKeys = String(r.case_keys || '').split(',').map(s => s.trim()).filter(Boolean);\n\nreturn caseKeys.map(k => ({\n  json: {\n    thread_id: r.thread_id,\n    case_key: k,\n    is_active: true,\n    created_at: nowIso,\n    updated_at: nowIso\n  }\n}));"
+        "jsCode": "const nowIso = new Date().toISOString();\n\nreturn $input.all().flatMap((item, index) => {\n  const r = $('plantilla mail 1').itemMatching(index).json;\n  const caseKeys = String(r.case_keys || '').split(',').map(s => s.trim()).filter(Boolean);\n\n  return caseKeys.map(k => ({\n    json: {\n      thread_id: r.thread_id,\n      case_key: k,\n      is_active: true,\n      created_at: nowIso,\n      updated_at: nowIso\n    }\n  }));\n});"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -499,7 +499,7 @@
     },
     {
       "parameters": {
-        "jsCode": "function nextBusinessDate(fromIso, addDays = 2) {\n  const d = new Date(fromIso);\n  d.setDate(d.getDate() + addDays);\n  const day = d.getDay(); // 0 dom, 6 sab\n  if (day === 6) d.setDate(d.getDate() + 2);\n  if (day === 0) d.setDate(d.getDate() + 1);\n  // guardamos solo YYYY-MM-DD\n  const y = d.getFullYear();\n  const m = String(d.getMonth()+1).padStart(2,'0');\n  const dd = String(d.getDate()).padStart(2,'0');\n  return `${y}-${m}-${dd}`;\n}\n\nreturn $input.all().map(item => {\n  const r = item.json;\n  const nowIso = r.sent_at ?? new Date().toISOString();\n\n  const newCount = Number(r.followup_count ?? 0) + 1;\n  const willClose = newCount >= 5;\n\n  return {\n    json: {\n      thread_id: r.thread_id,\n      followup_count: newCount,\n      status_followup: willClose ? \"CLOSED\" : \"WAITING_REPLY\",\n      last_message_id: r.sent_message_id,\n      last_direction: \"OUTBOUND\",\n      billing_address: r.billing_address,\n      payer_label: r.payer_label,\n      last_outbound_at: nowIso,\n      next_followup_at: willClose ? \"\" : nextBusinessDate(nowIso, 2),\n      updated_at: nowIso\n    }\n  };\n});"
+        "jsCode": "function nextBusinessDate(fromIso, addDays = 2) {\n  const d = new Date(fromIso);\n  d.setDate(d.getDate() + addDays);\n  const day = d.getDay(); // 0 dom, 6 sab\n  if (day === 6) d.setDate(d.getDate() + 2);\n  if (day === 0) d.setDate(d.getDate() + 1);\n  // guardamos solo YYYY-MM-DD\n  const y = d.getFullYear();\n  const m = String(d.getMonth()+1).padStart(2,'0');\n  const dd = String(d.getDate()).padStart(2,'0');\n  return `${y}-${m}-${dd}`;\n}\n\nreturn $input.all().map((item, index) => {\n  const r = $('plantilla mail 2').itemMatching(index).json;\n  const nowIso = r.sent_at ?? new Date().toISOString();\n\n  const newCount = Number(r.followup_count ?? 0) + 1;\n  const willClose = newCount >= 5;\n\n  return {\n    json: {\n      thread_id: r.thread_id,\n      followup_count: newCount,\n      status_followup: willClose ? \"CLOSED\" : \"WAITING_REPLY\",\n      last_message_id: r.sent_message_id,\n      last_direction: \"OUTBOUND\",\n      billing_address: r.billing_address,\n      payer_label: r.payer_label,\n      last_outbound_at: nowIso,\n      next_followup_at: willClose ? \"\" : nextBusinessDate(nowIso, 2),\n      updated_at: nowIso\n    }\n  };\n});"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -1413,7 +1413,7 @@
         "pollTimes": {
           "item": [
             {
-              "mode": "everyHour"
+              "mode": "everyMinute"
             }
           ]
         },
@@ -1569,8 +1569,7 @@
     {
       "parameters": {
         "promptType": "define",
-        "text": "=THREAD_ID: {{ $json.thread_id }}\nSUBJECT: {{ $('Code in JavaScript4').item.json.subject }}\n\nEMAIL_BODY:\n{{ $('Code in JavaScript4').item.json.body_text }}\n\n(OPCIONAL) CONTEXTO DE FACTURAS (si existe):\n{{$json.cases}}\n\nDevuelve SOLO el JSON final.",
-        "hasOutputParser": true,
+        "text": "=THREAD_ID: {{ $json.thread_id }}\nSUBJECT: {{ $('Code in JavaScript4').item.json.subject }}\n\nEMAIL_BODY:\n{{ $('Code in JavaScript4').item.json.body_text }}\n\n(OPCIONAL) CONTEXTO DE FACTURAS (si existe):\n{{ $json.case_keys }}\n\nDevuelve SOLO el JSON final.",
         "messages": {
           "messageValues": [
             {
@@ -1604,7 +1603,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const nowIso = $json.processed_at ?? new Date().toISOString();\nconst isPaid = $json.classification === \"PAID_CONFIRMED\";\n\nreturn [{\n  json: {\n    thread_id: $json.thread_id,\n    status_followup: isPaid ? \"CLOSED\" : \"REPLIED\",\n    next_followup_at: \"\",                // importante: pausa silencios\n    last_direction: \"INBOUND\",\n    last_inbound_at: nowIso,\n    last_inbound_from: $json.from_email ?? \"\",\n    updated_at: nowIso,\n    error: \"\"\n  }\n}];"
+        "jsCode": "const nowIso = $json.processed_at ?? new Date().toISOString();\nconst isPaid = $json.classification === \"PAID_CONFIRMED\";\n\nreturn [{\n  json: {\n    thread_id: $json.thread_id || $('Get row(s) in sheet').item.json.thread_id,\n    status_followup: isPaid ? \"CLOSED\" : \"REPLIED\",\n    next_followup_at: \"\",                // importante: pausa silencios\n    last_direction: \"INBOUND\",\n    last_inbound_at: nowIso,\n    last_inbound_from: $json.from_email ?? \"\",\n    updated_at: nowIso,\n    error: \"\"\n  }\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -1630,7 +1629,7 @@
     },
     {
       "parameters": {
-        "jsCode": "function pickFirst(...vals) {\n  for (const v of vals) {\n    if (v !== undefined && v !== null && String(v).trim() !== '') return v;\n  }\n  return '';\n}\n\nfunction extractRef(text) {\n  if (!text) return null;\n  const s = String(text);\n\n  // Captura \"Ref: REF-....\" o \"Referencia: REF-....\"\n  const m = s.match(/(?:\\bref(?:erencia)?\\b\\s*:\\s*)(REF-[A-Za-z0-9_-]+)/i);\n  return m ? m[1] : null;\n}\n\nfunction extractBilling(ref) {\n  if (!ref) return null;\n  const m = String(ref).match(/REF-(\\d+)-/i); // sin ^ para permitir texto alrededor\n  return m ? m[1] : null;\n}\n\nreturn $input.all().map(item => {\n  const r = item.json;\n\n  // Intenta varios caminos típicos del Gmail trigger\n  const subject = pickFirst(\n    r.subject,\n    r.Subject,\n    r.payload?.headers?.Subject,\n    r.payload?.headers?.subject\n  );\n\n  const body = pickFirst(\n    r.textPlain,\n    r.text,\n    r.body,\n    r.snippet,\n    r.payload?.body?.data\n  );\n\n  const thread_id = extractRef(subject) || extractRef(body);\n\n  // Fallback: a veces el Ref está en el subject sin \"Ref:\" (por ejemplo al reenviar)\n  // intenta encontrar REF-xxxx directamente\n  const directRef = thread_id || (String(subject).match(/\\bREF-\\d+-\\d+\\b/i)?.[0]) || null;\n\n  const billing_address = extractBilling(directRef);\n\n  return {\n    json: {\n      ...r,\n      subject,\n      body_text: body,\n      thread_id: directRef,\n      billing_address\n    }\n  };\n});"
+        "jsCode": "function pickFirst(...vals) {\n  for (const v of vals) {\n    if (v !== undefined && v !== null && String(v).trim() !== '') return v;\n  }\n  return '';\n}\n\nfunction extractRef(text) {\n  if (!text) return null;\n  const s = String(text);\n\n  // Captura \"Ref: REF-....\" o \"Referencia: REF-....\"\n  const m = s.match(/(?:\\bref(?:erencia)?\\b\\s*:\\s*)(REF-\\S+)/i);\n  return m ? m[1] : null;\n}\n\nfunction extractBilling(ref) {\n  if (!ref) return null;\n  const m = String(ref).match(/REF-(.+)-\\d+$/i); // captura todo el tramo intermedio (permite &, ., etc.), hasta el último -<timestamp>\n  return m ? m[1] : null;\n}\n\nreturn $input.all().map(item => {\n  const r = item.json;\n\n  // Intenta varios caminos típicos del Gmail trigger\n  const subject = pickFirst(\n    r.subject,\n    r.Subject,\n    r.payload?.headers?.Subject,\n    r.payload?.headers?.subject\n  );\n\n  const body = pickFirst(\n    r.textPlain,\n    r.text,\n    r.body,\n    r.snippet,\n    r.payload?.body?.data\n  );\n\n  const thread_id = extractRef(subject) || extractRef(body);\n\n  // Fallback: a veces el Ref está en el subject sin \"Ref:\" (por ejemplo al reenviar)\n  // intenta encontrar REF-xxxx directamente\n  const directRef = thread_id || (String(subject).match(/\\bREF-\\S+/i)?.[0]) || null;\n\n  const billing_address = extractBilling(directRef);\n\n  return {\n    json: {\n      ...r,\n      subject,\n      body_text: body,\n      thread_id: directRef,\n      billing_address\n    }\n  };\n});"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -1712,11 +1711,208 @@
             "last_inbound_at": "={{ $json.last_inbound_at }}",
             "last_inbound_from": "={{ $json.last_inbound_from }}",
             "updated_at": "={{ $json.updated_at }}",
-            "error": "={{ $json.error }}"
+            "error": "={{ $json.error }}",
+            "followup_count": 0
           },
           "matchingColumns": [
             "thread_id"
-          ]
+          ],
+          "schema": [
+            {
+              "id": "thread_id",
+              "displayName": "thread_id",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "billing_address",
+              "displayName": "billing_address",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "payer_label",
+              "displayName": "payer_label",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "payer_email",
+              "displayName": "payer_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "owner_email",
+              "displayName": "owner_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "status_followup",
+              "displayName": "status_followup",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "followup_count",
+              "displayName": "followup_count",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "next_followup_at",
+              "displayName": "next_followup_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_message_id",
+              "displayName": "last_message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "last_direction",
+              "displayName": "last_direction",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_outbound_at",
+              "displayName": "last_outbound_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "last_inbound_at",
+              "displayName": "last_inbound_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "last_inbound_from",
+              "displayName": "last_inbound_from",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "subject_normalized",
+              "displayName": "subject_normalized",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "lock_until",
+              "displayName": "lock_until",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "updated_at",
+              "displayName": "updated_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "sent_message_id",
+              "displayName": "sent_message_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "sent_at",
+              "displayName": "sent_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
         },
         "options": {}
       },
@@ -1773,7 +1969,7 @@
             "action_type": "={{ $json.action_type }}",
             "result": "={{ $json.result }}",
             "error_detail": "={{ $json.error_detail }}",
-            "idempotency_key": "=",
+            "idempotency_key": "={{ $json.event_id }}",
             "event_id": "={{ $json.event_id }}"
           },
           "matchingColumns": [],
@@ -1974,46 +2170,7 @@
       "typeVersion": 1.3,
       "position": [
         1168,
-        2128
-      ],
-      "credentials": {
-        "anthropicApi": {
-          "id": "hw28h9ZSZQeNPgSk",
-          "name": "Anthropic - agentecreditos"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "schemaType": "manual",
-        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"classification\": { \"type\": \"string\", \"enum\": [\"PAID_CONFIRMED\", \"PROMISE_TO_PAY\", \"DISPUTE\", \"NEED_COPY\", \"ASK_INFO\", \"OTHER\"] },\n    \"next_action\": { \"type\": \"string\", \"enum\": [\"CLOSE\", \"WAIT\", \"FOLLOWUP\", \"REQUEST_INFO\", \"ESCALATE\"] },\n    \"routing_team\": { \"type\": \"string\", \"enum\": [\"AR_CREDITS\", \"SALES_OWNER\", \"BACKOFFICE\", \"UNKNOWN\"] },\n    \"comment\": { \"type\": \"string\" },\n    \"confidence\": { \"type\": \"number\", \"minimum\": 0, \"maximum\": 1 },\n    \"payment_date\": { \"type\": [\"string\", \"null\"] },\n    \"needs_human\": { \"type\": \"boolean\" }\n  },\n  \"required\": [\"classification\", \"next_action\", \"routing_team\", \"comment\", \"confidence\", \"payment_date\", \"needs_human\"]\n}",
-        "autoFix": true
-      },
-      "id": "ce0f3e8f-2dde-4dc3-8dc9-95435f8722d6",
-      "name": "Structured Output Parser",
-      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
-      "typeVersion": 1.3,
-      "position": [
-        1136,
-        2336
-      ]
-    },
-    {
-      "parameters": {
-        "model": {
-          "__rl": true,
-          "mode": "id",
-          "value": "claude-sonnet-4-5-20250929"
-        },
-        "options": {}
-      },
-      "id": "f6dc8085-fe2e-4e4e-bd83-3dc0a4003ac8",
-      "name": "Anthropic Chat Model (Fixer)",
-      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
-      "typeVersion": 1.3,
-      "position": [
-        1136,
-        2464
+        2144
       ],
       "credentials": {
         "anthropicApi": {
@@ -2023,7 +2180,51 @@
       }
     }
   ],
-  "pinData": {},
+  "pinData": {
+    "Gmail Trigger": [
+      {
+        "json": {
+          "id": "19f5c922d917014e",
+          "threadId": "19f5bc72c85bfa42",
+          "snippet": "Vuelve a mandarlo El lun, 13 jul 2026 a las 16:00, Diego Mendoza de León (&lt;diegomendzdln@gmail.com&gt;) escribió: Hola, Te escribimos desde Europastry porque hemos visto que tenemos las siguientes",
+          "payload": {
+            "mimeType": "multipart/alternative"
+          },
+          "sizeEstimate": 3521,
+          "historyId": "7957528",
+          "internalDate": "1783964510000",
+          "labels": [
+            {
+              "id": "SENT",
+              "name": "SENT"
+            },
+            {
+              "id": "INBOX",
+              "name": "INBOX"
+            },
+            {
+              "id": "IMPORTANT",
+              "name": "IMPORTANT"
+            },
+            {
+              "id": "UNREAD",
+              "name": "UNREAD"
+            },
+            {
+              "id": "Label_3146516315499575359",
+              "name": "credit_demo"
+            }
+          ],
+          "Subject": "Re: Recordatorio de facturas pendientes | La Rioja - Almacén 1 | Ref: REF-100013-BANCOPEIRÓS.-1783951200173",
+          "From": "\"Diego Mendoza de León\" <diegomendzdln@gmail.com>",
+          "To": "diegomendzdln@gmail.com"
+        },
+        "pairedItem": {
+          "item": 0
+        }
+      }
+    ]
+  },
   "connections": {
     "Trigger de contactos": {
       "main": [
@@ -2560,38 +2761,18 @@
           }
         ]
       ]
-    },
-    "Structured Output Parser": {
-      "ai_outputParser": [
-        [
-          {
-            "node": "Clasificar respuesta (Anthropic)",
-            "type": "ai_outputParser",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Anthropic Chat Model (Fixer)": {
-      "ai_languageModel": [
-        [
-          {
-            "node": "Structured Output Parser",
-            "type": "ai_languageModel",
-            "index": 0
-          }
-        ]
-      ]
     }
   },
-  "active": false,
+  "active": true,
   "settings": {
     "executionOrder": "v1",
     "binaryMode": "separate",
     "availableInMCP": false,
-    "callerPolicy": "workflowsFromSameOwner"
+    "callerPolicy": "workflowsFromSameOwner",
+    "timeSavedMode": "fixed",
+    "timezone": "Europe/Madrid"
   },
-  "versionId": "386041cf-7113-4efa-8605-21ab431fd146",
+  "versionId": "f675b520-dc55-45f2-bfd8-25c2c9f2a390",
   "meta": {
     "instanceId": "b95fa65f8226b9dff22d4917d19c79b6b68a68a00b113077d6753d32a72d7644"
   },

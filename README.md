@@ -133,6 +133,37 @@ final:
    confirmar que la clave es correcta, sospechar del propio objeto credencial
    antes que de la clave.
 
+### Segunda ronda — tras poner el flujo a correr en automático
+
+Con los tres workflows ya validados manualmente, dejar el cron activo sacó a la
+luz tres problemas más que las pruebas manuales no habían mostrado:
+
+6. **Zona horaria heredada de la instancia, no del proyecto.** Los triggers
+   programados (`08:00`/`10:00`) se disparaban a las 14:00/16:00 hora de Madrid.
+   Causa: ningún trigger ni el propio workflow tenían una timezone explícita, así
+   que heredaban la de la instancia de n8n (`America/New_York`, UTC-4) en vez de
+   `Europe/Madrid`. Se corrigió fijando `timezone` en la configuración del
+   workflow. Lección: en un cron programado, la zona horaria nunca debe darse
+   por supuesta — hay que fijarla explícitamente, no confiar en el valor por
+   defecto del servidor donde corre la herramienta.
+
+7. **Valor "vacío" tratado como "no nulo".** El registro de auditoría
+   (`agent_action_log`) volvía a fallar por duplicado en `idempotency_key`, pese
+   a que ya se había corregido ese mapeo antes. La causa real: el campo llegaba
+   como *string vacío* (`""`), no como el valor esperado — y una restricción
+   `UNIQUE ... WHERE idempotency_key IS NOT NULL` sí considera un string vacío
+   como "no nulo", así que la protección contra duplicados saltaba igualmente.
+   El mapeo en el nodo apuntaba a un campo que en ejecuciones automáticas
+   resolvía distinto que en las pruebas manuales del editor.
+
+8. **El mismo bug de propagación, en una rama distinta.** El bug de "un nodo
+   Gmail 'Send' no propaga los campos de entrada" (ya resuelto en la rama de
+   primer contacto) reapareció en la rama de recordatorios de seguimiento
+   (silencios) — el mismo patrón, pero en un Code node distinto que nadie había
+   corregido todavía porque las pruebas manuales anteriores no habían llegado a
+   ejercitar esa rama en concreto. Recordatorio de que un fix aplicado a una
+   rama no cubre automáticamente ramas paralelas con el mismo patrón de código.
+
 ## Líneas de desarrollo futuras
 
 - Migrar el canal de correo de Gmail (demo) a Microsoft Graph/Outlook, con
