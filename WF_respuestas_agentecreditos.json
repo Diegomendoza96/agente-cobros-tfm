@@ -1,0 +1,177 @@
+{
+  "name": "WF respuestas agentecreditos",
+  "nodes": [
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT \n    thread_id,\n    billing_address,\n    payer_label,\n    payer_email,\n    owner_email,\n    status_followup,\n    followup_count,\n    last_message_id,\n    subject_normalized\nFROM credit_ops.email_threads\nWHERE status_followup = 'WAITING_REPLY'",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        208,
+        0
+      ],
+      "id": "030e9d4e-2c9f-4c27-a3f5-2a06edbe94d3",
+      "name": "Execute a SQL query",
+      "credentials": {
+        "postgres": {
+          "id": "0AiHOxpc0ykMjjzb",
+          "name": "Postgres - agentecreditos"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const RESPUESTAS = [\n  {\n    escenario: \"PAGO_CONFIRMADO\",\n    textos: [\n      \"Buenos días, les confirmamos que el pago fue realizado ayer. Pueden verificarlo en sus cuentas en los próximos días.\",\n      \"Hola, el pago ya está cursado desde esta mañana. Quedo a su disposición para cualquier consulta.\",\n      \"Buenas tardes, acabo de confirmar con nuestro departamento financiero que la transferencia se realizó el lunes.\"\n    ]\n  },\n  {\n    escenario: \"PROMESA_PAGO\",\n    textos: [\n      \"Disculpen el retraso. Procederemos al pago la próxima semana, en cuanto tengamos la aprobación interna.\",\n      \"Lo tenemos en agenda, lo abonaremos antes del viernes.\",\n      \"Estamos en proceso de aprobación interna, en máximo 3 días realizamos el pago.\"\n    ]\n  },\n  {\n    escenario: \"DISPUTA\",\n    textos: [\n      \"Esta factura ya fue abonada el mes pasado. Por favor revisen sus registros antes de volver a contactarnos.\",\n      \"Creemos que hay un error, este importe ya fue satisfecho. Les adjuntamos el justificante.\",\n      \"No entendemos este recordatorio, el pago está confirmado por nuestra parte desde hace semanas.\"\n    ]\n  },\n  {\n    escenario: \"SOLICITUD_COPIA\",\n    textos: [\n      \"¿Podríais enviarnos de nuevo la factura? No la hemos recibido correctamente y necesitamos revisarla.\",\n      \"Necesitamos una copia de la factura para poder tramitar el pago internamente.\",\n      \"Por favor reenviad la factura a nuestro departamento de administración, no la localizamos en el sistema.\"\n    ]\n  },\n  {\n    escenario: \"SIN_RESPUESTA\",\n    textos: [null]\n  }\n];\n\nconst PESOS = [30, 30, 10, 15, 15];\n\nfunction elegirEscenario() {\n  const total = PESOS.reduce((a, b) => a + b, 0);\n  let random = Math.random() * total;\n  for (let i = 0; i < RESPUESTAS.length; i++) {\n    random -= PESOS[i];\n    if (random <= 0) {\n      const textos = RESPUESTAS[i].textos;\n      const texto = textos[Math.floor(Math.random() * textos.length)];\n      return { escenario: RESPUESTAS[i].escenario, texto };\n    }\n  }\n  const textos = RESPUESTAS[0].textos;\n  return { escenario: RESPUESTAS[0].escenario, texto: textos[0] };\n}\n\nconst items_filtrados = items.filter(() => Math.random() < 0.4);\n\nreturn items_filtrados.map(item => {\n  const escenario = elegirEscenario();\n  return {\n    json: {\n      ...item.json,\n      escenario: escenario.escenario,\n      texto_respuesta: escenario.texto,\n      enviar: escenario.escenario !== \"SIN_RESPUESTA\"\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        0
+      ],
+      "id": "25d6a08a-d541-478b-998a-bde33cf98a67",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "8d8dccf7-95a2-48a4-8e3a-1fcdc5f5278d",
+              "leftValue": "={{ $json.enviar }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        624,
+        0
+      ],
+      "id": "0a409735-2d9a-4e06-9c68-76bcfe2896b0",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "sendTo": "=diegomendzdln@gmail.com",
+        "subject": "=Re: {{ $json.subject_normalized }}",
+        "message": "={{ $json.texto_respuesta }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        832,
+        -96
+      ],
+      "id": "55e6a2a3-eed2-4ee6-86bb-10636de4a84d",
+      "name": "Send a message",
+      "webhookId": "e35108ad-d85d-444a-8496-91487d63b5eb",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "GJBEoBrDcbZ8sSvC",
+          "name": "Gmail account demo client"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 12
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "id": "9b43c8c0-22a0-41a0-900b-4cc0ce3b575f",
+      "name": "Schedule Trigger"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "3c78910e-f34c-4031-922b-c7aaebbcf100",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "b95fa65f8226b9dff22d4917d19c79b6b68a68a00b113077d6753d32a72d7644"
+  },
+  "id": "496rlGGJc9xEHsTM",
+  "tags": []
+}

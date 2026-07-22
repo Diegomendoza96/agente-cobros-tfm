@@ -107,7 +107,7 @@ def generate_clients(n_clients: int):
         clients.append({
             "billing_address": billing_address,
             "owner_name": fake.name(),
-            "owner_email": fake.company_email(),
+            "owner_email": os.environ.get("TEST_OWNER_EMAIL", "owner@example.com"),
             "payer_name": fake.company(),
             "punto_entrega": f"{fake.city()} - Almacén {random.randint(1,5)}",
         })
